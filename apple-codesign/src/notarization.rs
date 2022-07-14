@@ -465,8 +465,16 @@ pub fn write_flat_package_to_app_store_package<F: Read + Seek + Debug>(
     } else if let Some(_component) = pkg.root_component()? {
         warn!("notarizing a component installer");
 
-        error!("support for notarizing a component installer is not yet implemented");
-        return Err(AppleCodesignError::NotarizeFlatPackageParse);
+        // We need to extract the primary component identifier from the `PackageInfo` XML.
+        let id = match _component.package_info() {
+            Some(_pkginfo) => _pkginfo.identifier.clone(),
+            None => {
+                error!("unable to find package identifier in component package (please report this bug)");
+                return Err(AppleCodesignError::NotarizeFlatPackageParse);
+            }
+        };
+
+        id
     } else {
         error!("do not know how to extract bundle identifier from package installer");
         error!("please report this bug");
@@ -820,10 +828,26 @@ impl Notarizer {
         );
 
         let start_time = std::time::Instant::now();
+        let mut retries = 0;
 
         loop {
-            let status = self.get_upload_status(upload_id)?;
+            let response = self.get_upload_status(upload_id);
 
+            let status = match response {
+                Ok(r) => r,
+                Err(e) => {
+                    retries += 1;
+                    if retries >= 3 {
+                        return Err(e);
+                    }
+                    warn!(
+                        "error returned for package upload {}, retrying {}/3",
+                        upload_id, retries
+                    );
+                    continue;
+                }
+            };
+            retries = 0;
             let elapsed = start_time.elapsed();
 
             info!(
